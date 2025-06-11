@@ -17,10 +17,50 @@ app.use(express.json());
 
 // Хранилища данных
 const users = new Map();
-const privateChats = new Map(); // Хранение истории приватных чатов
-const groupMessages = []; // История группового чата
-let meetupPoint = null; // Текущая точка сбора
-const messageDeliveryStatus = new Map(); // Статусы доставки сообщений
+const privateChats = new Map();
+const groupMessages = [];
+let meetupPoint = null;
+const customMarkers = new Map(); // Новое хранилище для пользовательских меток
+const messageDeliveryStatus = new Map();
+
+// Функция для сохранения пользовательской метки
+function saveCustomMarker(markerData, userId) {
+    const markerId = Date.now() + Math.random();
+    const marker = {
+        id: markerId,
+        coordinates: markerData.coordinates,
+        title: markerData.title,
+        description: markerData.description,
+        eventDate: markerData.eventDate,
+        category: markerData.category,
+        createdBy: userId,
+        timestamp: new Date().toISOString()
+    };
+    
+    customMarkers.set(markerId, marker);
+    
+    // Уведомляем всех пользователей о новой метке
+    io.emit('markerUpdate', {
+        action: 'add',
+        marker: marker
+    });
+    
+    return markerId;
+}
+
+// Функция для удаления метки
+function deleteCustomMarker(markerId, userId) {
+    const marker = customMarkers.get(markerId);
+    if (marker && marker.createdBy === userId) {
+        customMarkers.delete(markerId);
+        io.emit('markerUpdate', {
+            action: 'delete',
+            markerId: markerId
+        });
+        return true;
+    }
+    return false;
+}
 
 // Функция для сохранения точки сбора
 function saveMeetupPoint(point, setBy) {
@@ -31,7 +71,6 @@ function saveMeetupPoint(point, setBy) {
         description: point.description || 'Точка сбора'
     };
     
-    // Уведомляем всех пользователей о новой точке сбора
     io.emit('meetupPointUpdate', meetupPoint);
     console.log(`Точка сбора установлена пользователем ${setBy}:`, meetupPoint);
 }
@@ -39,17 +78,17 @@ function saveMeetupPoint(point, setBy) {
 // Функция для расчета времени в пути по типу транспорта
 function calculateTravelTime(distance, transportType) {
     const speeds = {
-        '🏍️ Мото': 90, // км/ч
+        '🏍️ Мото': 60,
         '🚲 Вело': 15,
         '🚶 Пешкодрали': 5,
         '🎤 Иду на концерт': 4,
-        '☕ Чаи пинаю': 300,
+        '☕ Чаи пинаю': 3,
         '🟢 Свободен': 50,
         '🔴 Не беспокоить': 40
     };
     
     const speed = speeds[transportType] || 40;
-    return Math.round((distance / speed) * 60); // время в минутах
+    return Math.round((distance / speed) * 60);
 }
 
 // Функция для получения истории чата
@@ -79,6 +118,18 @@ function savePrivateMessage(fromId, toId, message) {
     return messageData;
 }
 
+// Функция расчета расстояния между двумя точками
+function calculateDistance(coords1, coords2) {
+    const R = 6371;
+    const dLat = (coords2[0] - coords1[0]) * Math.PI / 180;
+    const dLon = (coords2[1] - coords1[1]) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(coords1[0] * Math.PI / 180) * Math.cos(coords2[0] * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
 io.on('connection', (socket) => {
     console.log('Пользователь подключился:', socket.id);
 
@@ -97,8 +148,11 @@ io.on('connection', (socket) => {
             socket.emit('meetupPointUpdate', meetupPoint);
         }
         
+        // Отправляем все пользовательские метки
+        socket.emit('allMarkers', Array.from(customMarkers.values()));
+        
         // Отправляем историю группового чата
-        socket.emit('groupChatHistory', groupMessages.slice(-50)); // последние 50 сообщений
+        socket.emit('groupChatHistory', groupMessages.slice(-50));
         
         // Обновляем список пользователей для всех
         io.emit('users', Array.from(users.values()));
@@ -127,6 +181,45 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Создание пользовательской метки
+    socket.on('createMarker', (markerData) => {
+        const user = users.get(socket.id);
+        if (user) {
+            const markerId = saveCustomMarker(markerData, socket.id);
+            socket.emit('markerCreated', { id: markerId, success: true });
+        }
+    });
+
+    // Удаление пользовательской метки
+    socket.on('deleteMarker', (data) => {
+        const success = deleteCustomMarker(data.markerId, socket.id);
+        socket.emit('markerDeleted', { 
+            markerId: data.markerId, 
+            success: success 
+        });
+    });
+
+    // Редактирование метки
+    socket.on('editMarker', (data) => {
+        const marker = customMarkers.get(data.markerId);
+        if (marker && marker.createdBy === socket.id) {
+            marker.title = data.title || marker.title;
+            marker.description = data.description || marker.description;
+            marker.eventDate = data.eventDate || marker.eventDate;
+            marker.category = data.category || marker.category;
+            
+            io.emit('markerUpdate', {
+                action: 'edit',
+                marker: marker
+            });
+            
+            socket.emit('markerEdited', { 
+                markerId: data.markerId, 
+                success: true 
+            });
+        }
+    });
+
     // Установка точки сбора
     socket.on('setMeetupPoint', (pointData) => {
         const user = users.get(socket.id);
@@ -147,7 +240,6 @@ io.on('connection', (socket) => {
         
         groupMessages.push(messageData);
         
-        // Отправляем сообщение всем пользователям
         users.forEach((user, userId) => {
             if (userId !== socket.id) {
                 io.to(userId).emit('chat', messageData);
@@ -155,7 +247,6 @@ io.on('connection', (socket) => {
             }
         });
         
-        // Подтверждение отправки автору
         socket.emit('messageDelivered', {
             messageId: messageData.id,
             deliveredCount: messageData.deliveredTo.length
@@ -166,7 +257,6 @@ io.on('connection', (socket) => {
     socket.on('privateMessage', (data) => {
         const messageData = savePrivateMessage(socket.id, data.to, data.text);
         
-        // Отправляем сообщение получателю
         io.to(data.to).emit('privateMessage', {
             id: messageData.id,
             from: socket.id,
@@ -174,7 +264,6 @@ io.on('connection', (socket) => {
             timestamp: messageData.timestamp
         });
         
-        // Уведомление получателю
         const fromUser = users.get(socket.id);
         io.to(data.to).emit('showNotification', {
             title: `Сообщение от ${fromUser ? fromUser.name : 'Пользователя'}`,
@@ -182,7 +271,6 @@ io.on('connection', (socket) => {
             from: socket.id
         });
         
-        // Подтверждение отправки
         socket.emit('messageDelivered', {
             messageId: messageData.id,
             to: data.to
@@ -200,7 +288,6 @@ io.on('connection', (socket) => {
                 message.read = true;
                 message.readAt = new Date().toISOString();
                 
-                // Уведомляем отправителя о прочтении
                 io.to(data.from).emit('messageReadConfirmation', {
                     messageId: data.messageId,
                     readBy: socket.id,
@@ -225,18 +312,6 @@ io.on('connection', (socket) => {
         console.log('Пользователь отключился:', socket.id);
     });
 });
-
-// Функция расчета расстояния между двумя точками
-function calculateDistance(coords1, coords2) {
-    const R = 6371; // радиус Земли в км
-    const dLat = (coords2[0] - coords1[0]) * Math.PI / 180;
-    const dLon = (coords2[1] - coords1[1]) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(coords1[0] * Math.PI / 180) * Math.cos(coords2[0] * Math.PI / 180) *
-              Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
