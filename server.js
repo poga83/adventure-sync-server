@@ -20,7 +20,7 @@ const users = new Map();
 const privateChats = new Map();
 const groupMessages = [];
 let meetupPoint = null;
-const customMarkers = new Map(); // Новое хранилище для пользовательских меток
+const customMarkers = new Map();
 const messageDeliveryStatus = new Map();
 
 // Функция для сохранения пользовательской метки
@@ -81,7 +81,6 @@ function calculateTravelTime(distance, transportType) {
         '🏍️ Мото': 60,
         '🚲 Вело': 15,
         '🚶 Пешкодрали': 5,
-        '🎤 Иду на концерт': 4,
         '☕ Чаи пинаю': 3,
         '🟢 Свободен': 50,
         '🔴 Не беспокоить': 40
@@ -185,7 +184,7 @@ io.on('connection', (socket) => {
     socket.on('createMarker', (markerData) => {
         const user = users.get(socket.id);
         if (user) {
-            const markerId = saveCustomMarker(markerData, socket.id);
+            const markerId = saveCustomMarker(markerData, user.name);
             socket.emit('markerCreated', { id: markerId, success: true });
         }
     });
@@ -202,7 +201,7 @@ io.on('connection', (socket) => {
     // Редактирование метки
     socket.on('editMarker', (data) => {
         const marker = customMarkers.get(data.markerId);
-        if (marker && marker.createdBy === socket.id) {
+        if (marker && (marker.createdBy === users.get(socket.id)?.name)) {
             marker.title = data.title || marker.title;
             marker.description = data.description || marker.description;
             marker.eventDate = data.eventDate || marker.eventDate;
