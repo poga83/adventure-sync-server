@@ -261,7 +261,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Добавление точки к групповому маршруту
+        // Добавление точки к групповому маршруту
     socket.on('addWaypointToRoute', (data) => {
         const route = groupRoutes.get(data.routeId);
         if (route && route.participants.includes(socket.id)) {
@@ -303,6 +303,53 @@ io.on('connection', (socket) => {
         io.emit('users', Array.from(users.values()));
     });
 });
+// Исправленный код для server.js
+io.on('connection', (socket) => {
+    console.log('Пользователь подключился:', socket.id);
+
+    // Регистрация пользователя
+    socket.on('register', (userData) => {
+        // Добавляем пользователя в Map
+        users.set(socket.id, {
+            id: socket.id,
+            name: userData.name,
+            status: userData.status,
+            position: userData.position,
+            lastSeen: new Date().toISOString()
+        });
+        
+        // Важно: отправляем обновленный список ВСЕМ клиентам
+        io.emit('users', Array.from(users.values()));
+        
+        console.log(`Пользователь ${userData.name} зарегистрирован`);
+        console.log(`Всего пользователей: ${users.size}`);
+    });
+
+    // Обновление позиции
+    socket.on('position', (coords) => {
+        const user = users.get(socket.id);
+        if (user) {
+            user.position = coords;
+            user.lastSeen = new Date().toISOString();
+            // Отправляем обновленный список ВСЕМ клиентам
+            io.emit('users', Array.from(users.values()));
+        }
+    });
+
+    // Отключение пользователя
+    socket.on('disconnect', () => {
+        const user = users.get(socket.id);
+        if (user) {
+            console.log(`Пользователь ${user.name} отключился`);
+        }
+        
+        users.delete(socket.id);
+        
+        // Отправляем обновленный список ВСЕМ клиентам
+        io.emit('users', Array.from(users.values()));
+    });
+});
+
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
