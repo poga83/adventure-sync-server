@@ -1,7 +1,7 @@
 {
   "name": "adventure-sync-server",
-  "version": "1.0.0",
-  "description": "Adventure Sync server for real-time location sharing on Koyeb",
+  "version": "2.0.0",
+  "description": "Adventure Sync server for real-time location sharing on Railway",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -14,12 +14,13 @@
   "dependencies": {
     "express": "^4.18.2",
     "socket.io": "^4.7.0",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "pg": "^8.11.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
-  "keywords": ["adventure", "sync", "location", "realtime", "koyeb"],
+  "keywords": ["adventure", "sync", "location", "realtime", "railway"],
   "author": "poga83",
   "license": "MIT"
 }
