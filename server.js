@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -8,25 +9,20 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
 
-// Исправленные CORS настройки
+// Разрешаем CORS с вашего фронтенда
 const allowedOrigins = [
   'https://poga83.github.io',
-  'https://adventure-sync-client.vercel.app',
-  'http://localhost:3000',
-  'http://127.0.0.1:3000'
+  'http://localhost:3000'
 ];
-
 app.use(cors({
   origin: allowedOrigins,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  credentials: false,
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET','POST','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
 }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// PostgreSQL с правильной обработкой ошибок
+// Подключение к PostgreSQL через DATABASE_URL
 const client = new Client({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production'
@@ -35,229 +31,134 @@ const client = new Client({
 });
 
 async function initDatabase() {
-  try {
-    await client.connect();
-    console.log('✅ PostgreSQL подключен');
-    
-    await client.query(`
-      CREATE EXTENSION IF NOT EXISTS postgis;
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        socket_id TEXT UNIQUE,
-        name TEXT NOT NULL,
-        status TEXT DEFAULT 'walking',
-        position POINT,
-        last_seen TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS trips (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT,
-        start_date DATE,
-        end_date DATE,
-        gathering_point POINT,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS messages (
-        id SERIAL PRIMARY KEY,
-        trip_id INT REFERENCES trips(id),
-        sender_name TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-      CREATE TABLE IF NOT EXISTS tracks (
-        id SERIAL PRIMARY KEY,
-        trip_id INT REFERENCES trips(id),
-        user_name TEXT,
-        track_name TEXT,
-        track_data JSONB,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-    console.log('✅ Таблицы БД готовы');
-  } catch (error) {
-    console.error('❌ Ошибка инициализации БД:', error);
-    throw error;
-  }
+  await client.connect();
+  console.log('✅ Connected to Postgres');
+  await client.query(`
+    CREATE EXTENSION IF NOT EXISTS postgis;
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      socket_id TEXT UNIQUE,
+      name TEXT NOT NULL,
+      status TEXT DEFAULT 'walking',
+      position POINT,
+      last_seen TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS trips (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      start_date DATE,
+      end_date DATE,
+      gathering_point POINT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id SERIAL PRIMARY KEY,
+      trip_id INT REFERENCES trips(id),
+      sender_name TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS tracks (
+      id SERIAL PRIMARY KEY,
+      trip_id INT REFERENCES trips(id),
+      user_name TEXT,
+      track_name TEXT,
+      track_data JSONB,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+  console.log('✅ Tables are ready');
 }
 
-// Health check с диагностикой
+// Health check
 app.get('/health', async (req, res) => {
   try {
-    // Проверка подключения к БД
     await client.query('SELECT 1');
-    res.json({
-      status: 'ok',
-      time: new Date().toISOString(),
-      database: 'connected',
-      platform: 'railway'
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'error',
-      time: new Date().toISOString(),
-      database: 'disconnected',
-      error: error.message
-    });
+    res.json({ status:'ok', time: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ status:'error', error: err.message });
   }
 });
 
-// Главная страница
-app.get('/', (req, res) => {
-  res.json({
-    name: 'Adventure Sync Server',
-    version: '2.0.1',
-    status: 'running',
-    platform: 'Railway'
-  });
-});
-
-// API для поездок
+// Trips API
 app.post('/api/trips', async (req, res) => {
   try {
-    const { name, description, startDate, endDate, gatheringPoint } = req.body;
+    const { name, startDate, endDate, gatheringPoint } = req.body;
     const { rows } = await client.query(
-      'INSERT INTO trips(name,description,start_date,end_date,gathering_point) VALUES($1,$2,$3,$4,POINT($5,$6)) RETURNING *',
-      [name, description, startDate, endDate, gatheringPoint.lng, gatheringPoint.lat]
+      'INSERT INTO trips(name,start_date,end_date,gathering_point) VALUES($1,$2,$3,POINT($4,$5)) RETURNING *',
+      [name, startDate, endDate, gatheringPoint.lng, gatheringPoint.lat]
     );
     res.json(rows[0]);
   } catch (e) {
-    console.error('Ошибка создания поездки:', e);
     res.status(500).json({ error: e.message });
   }
 });
-
 app.get('/api/trips', async (req, res) => {
   try {
     const { rows } = await client.query('SELECT * FROM trips ORDER BY created_at DESC');
     res.json(rows);
   } catch (e) {
-    console.error('Ошибка получения поездок:', e);
     res.status(500).json({ error: e.message });
   }
 });
 
-// Socket.IO с исправленными CORS настройками
+// Socket.IO
 const io = new Server(server, {
-  cors: {
-    origin: allowedOrigins,
-    methods: ['GET', 'POST'],
-    credentials: false
-  },
-  transports: ['websocket', 'polling'],
-  pingTimeout: 60000,
-  pingInterval: 25000
+  cors: { origin: allowedOrigins, methods:['GET','POST'] },
+  transports: ['websocket','polling']
 });
-
 const activeUsers = new Map();
 
-io.on('connection', (socket) => {
-  console.log(`👤 Новое подключение: ${socket.id}`);
-  
+io.on('connection', socket => {
   socket.emit('connectionConfirmed', { socketId: socket.id });
 
-  socket.on('userConnected', async (data) => {
-    try {
-      await client.query(
-        'INSERT INTO users(socket_id,name,status) VALUES($1,$2,$3) ON CONFLICT(socket_id) DO UPDATE SET name=$2,status=$3,last_seen=NOW()',
-        [socket.id, data.name, data.status]
-      );
-      activeUsers.set(socket.id, { ...data, socketId: socket.id });
-      const list = Array.from(activeUsers.values());
-      io.emit('users', list);
-    } catch (error) {
-      console.error('Ошибка подключения пользователя:', error);
-    }
+  socket.on('userConnected', async ({ name, status }) => {
+    await client.query(
+      'INSERT INTO users(socket_id,name,status) VALUES($1,$2,$3) ' +
+      'ON CONFLICT(socket_id) DO UPDATE SET name=$2,status=$3,last_seen=NOW()',
+      [socket.id, name, status]
+    );
+    activeUsers.set(socket.id, { socketId: socket.id, name, status });
+    io.emit('users', Array.from(activeUsers.values()));
   });
 
-  socket.on('updatePosition', async (pos) => {
-    try {
-      const user = activeUsers.get(socket.id);
-      if (user) {
-        user.position = pos;
-        await client.query(
-          'UPDATE users SET position=POINT($1,$2),last_seen=NOW() WHERE socket_id=$3',
-          [pos.lng, pos.lat, socket.id]
-        );
-        socket.broadcast.emit('userPositionChanged', { userId: socket.id, position: pos });
-      }
-    } catch (error) {
-      console.error('Ошибка обновления позиции:', error);
-    }
+  socket.on('updatePosition', async ({ lat, lng }) => {
+    if (!activeUsers.has(socket.id)) return;
+    activeUsers.get(socket.id).position = { lat, lng };
+    await client.query(
+      'UPDATE users SET position=POINT($1,$2), last_seen=NOW() WHERE socket_id=$3',
+      [lng, lat, socket.id]
+    );
+    socket.broadcast.emit('userPositionChanged', { userId: socket.id, position: { lat, lng } });
   });
 
-  socket.on('groupMessage', async (msg) => {
-    try {
-      const user = activeUsers.get(socket.id);
-      if (user && msg.content) {
-        await client.query(
-          'INSERT INTO messages(trip_id,sender_name,content) VALUES($1,$2,$3)',
-          [msg.tripId, user.name, msg.content]
-        );
-        io.emit('groupMessage', {
-          senderName: user.name,
-          content: msg.content,
-          timestamp: Date.now()
-        });
-      }
-    } catch (error) {
-      console.error('Ошибка отправки сообщения:', error);
-    }
+  socket.on('groupMessage', async ({ tripId, content }) => {
+    const user = activeUsers.get(socket.id);
+    if (!user || !content) return;
+    await client.query(
+      'INSERT INTO messages(trip_id,sender_name,content) VALUES($1,$2,$3)',
+      [tripId, user.name, content]
+    );
+    io.emit('groupMessage', { senderName: user.name, content, timestamp: Date.now() });
   });
 
-  socket.on('joinTrip', (tripId) => {
-    socket.join(`trip_${tripId}`);
-  });
-
-  socket.on('saveTrack', async (track) => {
-    try {
-      const user = activeUsers.get(socket.id);
-      if (user) {
-        await client.query(
-          'INSERT INTO tracks(trip_id,user_name,track_name,track_data) VALUES($1,$2,$3,$4)',
-          [track.tripId, user.name, track.name, JSON.stringify(track.data)]
-        );
-        socket.emit('trackSaved', { success: true });
-      }
-    } catch (error) {
-      console.error('Ошибка сохранения трека:', error);
-      socket.emit('trackSaved', { success: false, error: error.message });
-    }
+  socket.on('saveTrack', async ({ tripId, name, data }) => {
+    const user = activeUsers.get(socket.id);
+    if (!user) return;
+    await client.query(
+      'INSERT INTO tracks(trip_id,user_name,track_name,track_data) VALUES($1,$2,$3,$4)',
+      [tripId, user.name, name, JSON.stringify(data)]
+    );
+    socket.emit('trackSaved', { success: true });
   });
 
   socket.on('disconnect', async () => {
-    try {
-      activeUsers.delete(socket.id);
-      await client.query('UPDATE users SET last_seen=NOW() WHERE socket_id=$1', [socket.id]);
-      io.emit('userDisconnected', socket.id);
-    } catch (error) {
-      console.error('Ошибка отключения:', error);
-    }
+    activeUsers.delete(socket.id);
+    await client.query('UPDATE users SET last_seen=NOW() WHERE socket_id=$1', [socket.id]);
+    io.emit('userDisconnected', socket.id);
   });
 });
 
-// Запуск сервера
-async function startServer() {
-  try {
-    await initDatabase();
-    server.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 Adventure Sync Server запущен на Railway`);
-      console.log(`📍 Порт: ${PORT}`);
-      console.log(`🌍 Разрешенные домены: ${allowedOrigins.join(', ')}`);
-    });
-  } catch (error) {
-    console.error('❌ Критическая ошибка запуска:', error);
-    process.exit(1);
-  }
-}
-
-// Обработка системных ошибок
-process.on('uncaughtException', (error) => {
-  console.error('❌ Необработанная ошибка:', error);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('❌ Необработанный отказ:', reason);
-});
-
-startServer();
+initDatabase()
+  .then(() => server.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server listening on port ${PORT}`)))
+  .catch(err => { console.error('Fatal error:', err); process.exit(1); });
